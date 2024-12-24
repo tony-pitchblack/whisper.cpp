@@ -11,6 +11,8 @@ url="http://a.files.bbci.co.uk/media/live/manifesto/audio/simulcast/hls/nonuk/sb
 fmt=aac # the audio format extension of the stream (TODO: auto detect)
 step_s=30
 model="base.en"
+language="en"  # Default language is English
+max_duration=0  # Default: no duration limit (0 means unlimited)
 
 check_requirements()
 {
@@ -29,10 +31,10 @@ check_requirements
 
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 stream_url [step_s] [model]"
+    echo "Usage: $0 stream_url [step_s] [model] [language] [max_duration]"
     echo ""
     echo "  Example:"
-    echo "    $0 $url $step_s $model"
+    echo "    $0 $url $step_s $model $language $max_duration"
     echo ""
     echo "No url specified, using default: $url"
 else
@@ -45,6 +47,14 @@ fi
 
 if [ -n "$3" ]; then
     model="$3"
+fi
+
+if [ -n "$4" ]; then
+    language="$4"  # Set the language if provided
+fi
+
+if [ -n "$5" ]; then
+    max_duration="$5"  # Set the maximum audio duration if provided
 fi
 
 # Whisper models
@@ -71,10 +81,17 @@ running=1
 
 trap "running=0" SIGINT SIGTERM
 
-printf "[+] Transcribing stream with model '$model', step_s $step_s (press Ctrl+C to stop):\n\n"
+printf "[+] Transcribing stream with model '$model', language '$language', step_s $step_s (press Ctrl+C to stop):\n\n"
 
-# continuous stream in native fmt (this file will grow forever!)
-ffmpeg -loglevel quiet -y -re -probesize 32 -i $url -c copy /tmp/whisper-live0.${fmt} &
+# Apply the max_duration option if it's set
+if [ "$max_duration" -gt 0 ]; then
+    printf "[+] Limiting audio input to $max_duration seconds\n"
+    ffmpeg -loglevel quiet -y -re -probesize 32 -i $url -c copy -t $max_duration /tmp/whisper-live0.${fmt} &
+else
+    # No limit on audio duration
+    ffmpeg -loglevel quiet -y -re -probesize 32 -i $url -c copy /tmp/whisper-live0.${fmt} &
+fi
+
 if [ $? -ne 0 ]; then
     printf "Error: ffmpeg failed to capture audio stream\n"
     exit 1
@@ -100,12 +117,18 @@ while [ $running -eq 1 ]; do
         err=$(cat /tmp/whisper-live.err | wc -l)
     done
 
-    ./build/bin/whisper-cli -t 8 -m ./models/ggml-${model}.bin -f /tmp/whisper-live.wav --no-timestamps -otxt 2> /tmp/whispererr | tail -n 1
+    ./build/bin/whisper-cli -t 8 -m ./models/ggml-${model}.bin -f /tmp/whisper-live.wav --language $language --no-timestamps -otxt 2> /tmp/whispererr | tail -n 1
 
     while [ $SECONDS -lt $((($i+1)*$step_s)) ]; do
         sleep 1
     done
     ((i=i+1))
+
+    # Stop if max_duration is reached
+    if [ "$max_duration" -gt 0 ] && [ $SECONDS -ge $max_duration ]; then
+        echo "Max duration reached, stopping stream."
+        break
+    fi
 done
 
 killall -v ffmpeg
