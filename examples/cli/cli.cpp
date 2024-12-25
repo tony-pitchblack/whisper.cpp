@@ -64,6 +64,7 @@ struct whisper_params {
     bool output_jsn_full = false;
     bool output_lrc      = false;
     bool no_prints       = false;
+    bool print_openai    = false;
     bool print_special   = false;
     bool print_colors    = false;
     bool print_progress  = false;
@@ -157,6 +158,7 @@ static bool whisper_params_parse(int argc, char ** argv, whisper_params & params
         else if (arg == "-ojf"  || arg == "--output-json-full"){ params.output_jsn_full = params.output_jsn = true; }
         else if (arg == "-of"   || arg == "--output-file")     { params.fname_out.emplace_back(argv[++i]); }
         else if (arg == "-np"   || arg == "--no-prints")       { params.no_prints       = true; }
+        else if (arg == "-poai" || arg == "--print-openai")    { params.print_openai    = true; }
         else if (arg == "-ps"   || arg == "--print-special")   { params.print_special   = true; }
         else if (arg == "-pc"   || arg == "--print-colors")    { params.print_colors    = true; }
         else if (arg == "-pp"   || arg == "--print-progress")  { params.print_progress  = true; }
@@ -225,6 +227,7 @@ static void whisper_print_usage(int /*argc*/, char ** argv, const whisper_params
     fprintf(stderr, "  -ojf,      --output-json-full  [%-7s] include more information in the JSON file\n",      params.output_jsn_full ? "true" : "false");
     fprintf(stderr, "  -of FNAME, --output-file FNAME [%-7s] output file path (without file extension)\n",      "");
     fprintf(stderr, "  -np,       --no-prints         [%-7s] do not print anything other than the results\n",   params.no_prints ? "true" : "false");
+    fprintf(stderr, "  -poai,     --print-openai      [%s] enable OpenAI-style JSON output\n",                  params.print_openai ? "true" : "false");
     fprintf(stderr, "  -ps,       --print-special     [%-7s] print special tokens\n",                           params.print_special ? "true" : "false");
     fprintf(stderr, "  -pc,       --print-colors      [%-7s] print colors\n",                                   params.print_colors ? "true" : "false");
     fprintf(stderr, "  -pp,       --print-progress    [%-7s] print progress\n",                                 params.print_progress ? "true" : "false");
@@ -320,7 +323,7 @@ static void whisper_print_segment_callback(struct whisper_context * ctx, struct 
             t1 = whisper_full_get_segment_t1(ctx, i);
         }
 
-        if (!params.no_timestamps) {
+        if (!(params.no_timestamps || params.print_openai)) {
             printf("[%s --> %s]  ", to_timestamp(t0).c_str(), to_timestamp(t1).c_str());
         }
 
@@ -328,38 +331,60 @@ static void whisper_print_segment_callback(struct whisper_context * ctx, struct 
             speaker = estimate_diarization_speaker(pcmf32s, t0, t1);
         }
 
-        if (params.print_colors) {
-            for (int j = 0; j < whisper_full_n_tokens(ctx, i); ++j) {
-                if (params.print_special == false) {
-                    const whisper_token id = whisper_full_get_token_id(ctx, i, j);
-                    if (id >= whisper_token_eot(ctx)) {
-                        continue;
-                    }
-                }
+        if (params.print_openai) {
+            // Retrieve the segment text
+            const char *text = whisper_full_get_segment_text(ctx, i);
 
-                const char * text = whisper_full_get_token_text(ctx, i, j);
-                const float  p    = whisper_full_get_token_p   (ctx, i, j);
+            // Build the JSON output
+            std::ostringstream json_output;
+            json_output << "{";
+            json_output << "\"start\": " << (t0 / 100.0) << ", "; // Convert timestamp to seconds
+            json_output << "\"end\": " << (t1 / 100.0) << ", "; // Convert timestamp to seconds
+            json_output << "\"text\": \"" << text << "\"";
 
-                const int col = std::max(0, std::min((int) k_colors.size() - 1, (int) (std::pow(p, 3)*float(k_colors.size()))));
-
-                printf("%s%s%s%s", speaker.c_str(), k_colors[col].c_str(), text, "\033[0m");
+            if (params.diarize && !speaker.empty()) {
+                json_output << ", \"speaker\": \"" << speaker << "\"";
             }
+
+            json_output << "}";
+
+            // Print the JSON output to stdout
+            printf("%s\n", json_output.str().c_str());
         } else {
-            const char * text = whisper_full_get_segment_text(ctx, i);
+            if (params.print_colors) {
+                for (int j = 0; j < whisper_full_n_tokens(ctx, i); ++j) {
+                    if (params.print_special == false) {
+                        const whisper_token id = whisper_full_get_token_id(ctx, i, j);
+                        if (id >= whisper_token_eot(ctx)) {
+                            continue;
+                        }
+                    }
 
-            printf("%s%s", speaker.c_str(), text);
-        }
+                    const char * text = whisper_full_get_token_text(ctx, i, j);
+                    const float  p    = whisper_full_get_token_p   (ctx, i, j);
 
-        if (params.tinydiarize) {
-            if (whisper_full_get_segment_speaker_turn_next(ctx, i)) {
-                printf("%s", params.tdrz_speaker_turn.c_str());
+                    const int col = std::max(0, std::min((int) k_colors.size() - 1, (int) (std::pow(p, 3)*float(k_colors.size()))));
+
+                    printf("%s%s%s%s", speaker.c_str(), k_colors[col].c_str(), text, "\033[0m");
+                }
+            } else {
+                const char * text = whisper_full_get_segment_text(ctx, i);
+
+                printf("%s%s", speaker.c_str(), text);
+            }
+
+            if (params.tinydiarize) {
+                if (whisper_full_get_segment_speaker_turn_next(ctx, i)) {
+                    printf("%s", params.tdrz_speaker_turn.c_str());
+                }
+            }
+
+            // with timestamps or speakers: each segment on new line
+            if (!params.no_timestamps || params.diarize) {
+                printf("\n");
             }
         }
 
-        // with timestamps or speakers: each segment on new line
-        if (!params.no_timestamps || params.diarize) {
-            printf("\n");
-        }
 
         fflush(stdout);
     }
