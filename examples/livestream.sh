@@ -128,6 +128,7 @@ while [ $running -eq 1 ]; do
             -t 8 \
             -m ./models/ggml-${model}.bin \
             -f /tmp/whisper-live.wav \
+            --language $language \
             --no-timestamps \
             -otxt 2> /tmp/whispererr | tail -n 1
     fi
