@@ -12,6 +12,8 @@
 #include <vector>
 #include <cstring>
 
+#include <iomanip>
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
@@ -340,7 +342,7 @@ static void whisper_print_segment_callback(struct whisper_context * ctx, struct 
             json_output << "{";
             json_output << "\"start\": " << (t0 / 100.0) << ", "; // Convert timestamp to seconds
             json_output << "\"end\": " << (t1 / 100.0) << ", "; // Convert timestamp to seconds
-            json_output << "\"text\": \"" << text << "\"";
+            json_output << "\"text\": " << std::quoted(text);
 
             if (params.diarize && !speaker.empty()) {
                 json_output << ", \"speaker\": \"" << speaker << "\"";
