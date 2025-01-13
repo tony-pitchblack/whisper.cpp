@@ -29,23 +29,28 @@ check_requirements()
 
 check_requirements
 
-if [ -z "$1" ]; then
-    echo "Usage: $0 stream_url [step_s] [model] [language] [max_duration] [verbosity] [print_openai]"
-    echo ""
-    echo "  Example:"
-    echo "    $0 $url $step_s $model $language $max_duration $verbosity $print_openai"
-    echo ""
-    echo "No url specified, using default: $url"
-else
-    url="$1"
-fi
-
 if [[ $# -ge 2 ]]; then step_s="$2"; fi
 if [[ $# -ge 3 ]]; then model="$3"; fi
 if [[ $# -ge 4 ]]; then language="$4"; fi
 if [[ $# -ge 5 ]]; then max_duration="$5"; fi
 if [[ $# -ge 6 ]]; then verbosity="$6"; fi
 if [[ $# -ge 7 ]]; then print_openai="$7"; fi  
+
+if [ -n "$1" ]; then
+    url="$1"
+    if [ "$verbosity" -gt 0 ]; then
+        echo "Using stream URL: $url"
+    fi
+else
+    if [ "$verbosity" -gt 0 ]; then
+        echo "Usage: $0 stream_url [step_s] [model] [language] [max_duration] [verbosity] [print_openai]"
+        echo ""
+        echo "  Example:"
+        echo "    $0 $url $step_s $model $language $max_duration $verbosity $print_openai"
+        echo ""
+        echo "No stream URL specified, using default: $url"
+    fi
+fi
 
 log() {
     if [ "$verbosity" -gt 0 ]; then
@@ -88,9 +93,9 @@ log "[+] Transcribing stream with model '$model', language '$language', step_s $
 
 if [ "$max_duration" -gt 0 ]; then
     log "[+] Limiting audio input to $max_duration seconds"
-    ffmpeg -loglevel quiet -y -re -probesize 32 -i $url -c copy -t $max_duration /tmp/whisper-live0.${fmt} &
+    ffmpeg -loglevel quiet -y -re -probesize 100000 -i $url -c copy -t $max_duration /tmp/whisper-live0.${fmt} &
 else
-    ffmpeg -loglevel quiet -y -re -probesize 32 -i $url -c copy /tmp/whisper-live0.${fmt} &
+    ffmpeg -loglevel quiet -y -re -probesize 100000 -i $url -c copy /tmp/whisper-live0.${fmt} &
 fi
 
 if [ $? -ne 0 ]; then
@@ -104,14 +109,16 @@ sleep $(($step_s))
 set +e
 
 i=0
-SECONDS=0
+processed_time=0
+start_time=$SECONDS  # Start tracking the elapsed time from the script start
+
 while [ $running -eq 1 ]; do
     err=1
     while [ $err -ne 0 ]; do
         if [ $i -gt 0 ]; then
-            ffmpeg -loglevel quiet -v error -noaccurate_seek -i /tmp/whisper-live0.${fmt} -y -ar 16000 -ac 1 -c:a pcm_s16le -ss $(($i*$step_s-1)).5 -t $step_s /tmp/whisper-live.wav 2> /tmp/whisper-live.err
+            ffmpeg -loglevel quiet -v error -noaccurate_seek -i /tmp/whisper-live0.${fmt} -y -ar 16000 -ac 1 -c:a pcm_s16le -ss $(($i * $step_s - 1)).5 -t $step_s /tmp/whisper-live.wav 2> /tmp/whisper-live.err
         else
-            ffmpeg -loglevel quiet -v error -noaccurate_seek -i /tmp/whisper-live0.${fmt} -y -ar 16000 -ac 1 -c:a pcm_s16le -ss $(($i*$step_s)) -t $step_s /tmp/whisper-live.wav 2> /tmp/whisper-live.err
+            ffmpeg -loglevel quiet -v error -noaccurate_seek -i /tmp/whisper-live0.${fmt} -y -ar 16000 -ac 1 -c:a pcm_s16le -ss $(($i * $step_s)) -t $step_s /tmp/whisper-live.wav 2> /tmp/whisper-live.err
         fi
         err=$(cat /tmp/whisper-live.err | wc -l)
     done
@@ -133,15 +140,27 @@ while [ $running -eq 1 ]; do
             -otxt 2> /tmp/whispererr | tail -n 1
     fi
 
-    while [ $SECONDS -lt $((($i+1)*$step_s)) ]; do
-        sleep 1
-    done
-    ((i=i+1))
+    # Increment processed time by step_s
+    processed_time=$((processed_time + step_s))
 
-    if [ "$max_duration" -gt 0 ] && [ $SECONDS -ge $max_duration ]; then
-        log "Max duration reached, stopping stream."
+    # Check if processed time exceeds max_duration
+    if [ "$max_duration" -gt 0 ] && [ $processed_time -ge $max_duration ]; then
+        log "Max file duration reached, stopping stream."
         break
     fi
+
+    # Wait until the next step
+    while [ $((SECONDS - start_time)) -lt $((($i + 1) * $step_s)) ]; do
+        sleep 1
+    done
+    ((i = i + 1))
+
+    # Calculate elapsed time
+    elapsed_time=$((SECONDS - start_time))
+
+    # Print time
+    echo "Processed time: $processed_time" seconds
+    echo "Elapsed time: $elapsed_time seconds"
 done
 
 if [ "$verbosity" -gt 0 ]; then
