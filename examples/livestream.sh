@@ -4,6 +4,8 @@
 #
 
 set -eo pipefail
+shopt -s expand_aliases
+alias time='/usr/bin/time'
 
 url="http://a.files.bbci.co.uk/media/live/manifesto/audio/simulcast/hls/nonuk/sbr_low/ak/bbc_world_service.m3u8"
 fmt=aac # the audio format extension of the stream (TODO: auto detect)
@@ -103,7 +105,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-log "Buffering audio. Please wait..."
+log -e "Buffering $step_s seconds of audio...\n"
 sleep $(($step_s))
 
 set +e
@@ -113,6 +115,7 @@ processed_time=0
 start_time=$SECONDS  # Start tracking the elapsed time from the script start
 
 while [ $running -eq 1 ]; do
+    ffmpeg_start_time=$SECONDS
     err=1
     while [ $err -ne 0 ]; do
         if [ $i -gt 0 ]; then
@@ -123,29 +126,58 @@ while [ $running -eq 1 ]; do
         err=$(cat /tmp/whisper-live.err | wc -l)
     done
 
-    if [ "$print_openai" -eq 1 ]; then
-        ./build/bin/whisper-cli \
-            -t 8 \
-            -m ./models/ggml-${model}.bin \
-            -f /tmp/whisper-live.wav \
-            --language $language \
-            -poai 2> /tmp/whispererr
-    else
-        ./build/bin/whisper-cli \
-            -t 8 \
-            -m ./models/ggml-${model}.bin \
-            -f /tmp/whisper-live.wav \
-            --language $language \
-            --no-timestamps \
-            -otxt 2> /tmp/whispererr | tail -n 1
+    ffmpeg_loop_time=$(($SECONDS - ffmpeg_start_time))
+    if [ "$verbosity" -gt 0 ]; then
+        formatted_ffmpeg_loop_time=$(date -u -d @$ffmpeg_loop_time +'%H:%M:%S')
+        echo "ffmpeg loop time: $formatted_ffmpeg_loop_time"
     fi
 
-    # Increment processed time by step_s
-    processed_time=$((processed_time + step_s))
+    # if [ "$verbosity" -gt 0 ]; then
+    #     redirect_out = "2>&1"
+    # else
+    #     redirect_out = ""
+    # fi
 
-    # Check if processed time exceeds max_duration
+    # TODO: debug whisper-cli not outputting to stdout
+    if [ "$print_openai" -eq 1 ]; then
+        time -f "whisper-cli time: %E" \
+            bash -c "./build/bin/whisper-cli \
+                -t 8 \
+                -m ./models/ggml-${model}.bin \
+                -f /tmp/whisper-live.wav \
+                --language $language \
+                -poai > /tmp/whispererr 2>&1"
+        # > /dev/stderr
+    else
+        time -f "whisper-cli time: %E" \
+            bash -c "./build/bin/whisper-cli \
+                -t 8 \
+                -m ./models/ggml-${model}.bin \
+                -f /tmp/whisper-live.wav \
+                --language $language \
+                -otxt > /tmp/whispererr 2>&1"
+        # > /dev/stderr
+    fi
+
+    processed_time=$((processed_time + step_s))
+    elapsed_time=$((SECONDS - start_time))
+
+    # Print time
+    if [ "$verbosity" -gt 0 ]; then
+        # Convert seconds to h:m:s format using date
+        formatted_processed_time=$(date -u -d @$processed_time +'%H:%M:%S')
+        formatted_elapsed_time=$(date -u -d @$elapsed_time +'%H:%M:%S')
+
+        echo "Processed time: $formatted_processed_time"
+        echo -e "Elapsed time: $formatted_elapsed_time\n"
+    fi
+
+    # End if reached max file duration
     if [ "$max_duration" -gt 0 ] && [ $processed_time -ge $max_duration ]; then
-        log "Max file duration reached, stopping stream."
+        if [ "$verbosity" -gt 0 ]; then
+            echo -e "\nMax file duration reached, stopping stream.\n"
+        fi
+
         break
     fi
 
@@ -154,18 +186,13 @@ while [ $running -eq 1 ]; do
         sleep 1
     done
     ((i = i + 1))
-
-    # Calculate elapsed time
-    elapsed_time=$((SECONDS - start_time))
-
-    # Print time
-    echo "Processed time: $processed_time" seconds
-    echo "Elapsed time: $elapsed_time seconds"
 done
 
+# TODO: remove killing nonexistent processes
 if [ "$verbosity" -gt 0 ]; then
     killall -v ffmpeg
     killall -v whisper-cli
+    echo -e '\n'
 else
     killall -v ffmpeg &>/dev/null
     killall -v whisper-cli &>/dev/null
